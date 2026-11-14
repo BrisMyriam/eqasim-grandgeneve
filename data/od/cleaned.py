@@ -1,5 +1,6 @@
 import numpy as np
 import pandas as pd
+import data.census.coding as coding
 
 """
 Cleans OD data to arrive at OD flows between municipalities for work
@@ -12,6 +13,11 @@ def configure(context):
     context.stage("data.od.part_time")
 
     context.config("random_seed")
+    context.config("census_year", 2022)
+    context.config("census_two_wheels_mode", "bike")
+
+    if coding.splits_two_wheels(context.config("census_year"), context.config("census_two_wheels_mode")):
+        context.stage("data.census.two_wheels_shares")
 
 # TP (work time) codes of part-time workers: 2 in the RP2022 release, 12 in RP2023
 PART_TIME_CODES = [2, 12]
@@ -51,16 +57,28 @@ def execute(context):
     if len(excess_communes) > 0:
         raise RuntimeError("Found additional communes: %s" % excess_communes)
 
-    # Clean commute mode for work
-    df_work["commute_mode"] = ""
-    df_work.loc[df_work["TRANS"] == 1, "commute_mode"] = "no transport"
-    df_work.loc[df_work["TRANS"] == 2, "commute_mode"] = "walk"
-    df_work.loc[df_work["TRANS"] == 3, "commute_mode"] = "bike"
-    df_work.loc[df_work["TRANS"] == 4, "commute_mode"] = "car"
-    df_work.loc[df_work["TRANS"] == 5, "commute_mode"] = "car"
-    df_work.loc[df_work["TRANS"] == 6, "commute_mode"] = "pt"
-    assert not np.any(df_work["commute_mode"] == "")
-    df_work["commute_mode"] = df_work["commute_mode"].astype("category")    
+    # Clean commute mode for work (coding depends on the census year, see data.census.coding)
+    commute_modes = coding.od_commute_modes(context.config("census_year"), context.config("census_two_wheels_mode"))
+    df_work["commute_mode"] = df_work["TRANS"].map(commute_modes)
+    assert not np.any(df_work["commute_mode"].isna())
+
+    if coding.splits_two_wheels(context.config("census_year"), context.config("census_two_wheels_mode")):
+        # Old single two-wheel modality: split the weight into bike and car with
+        # the share of bicycles of the origin commune (or departement)
+        f = df_work["commute_mode"] == coding.TWO_WHEELS
+        df_bike = df_work[f].copy()
+        df_car = df_work[f].copy()
+
+        df_origins = pd.DataFrame({ "commune_id": df_bike["origin_id"].astype(str), "departement_id": df_bike["origin_id"].astype(str).str[:2] })
+        shares = coding.bike_shares(df_origins, context.stage("data.census.two_wheels_shares"))
+
+        df_bike["commute_mode"], df_bike["weight"] = "bike", df_bike["weight"] * shares
+        df_car["commute_mode"], df_car["weight"] = "car", df_car["weight"] * (1.0 - shares)
+        df_work = pd.concat([df_work[~f], df_bike, df_car], ignore_index = True)
+
+        for column in ["origin_id", "destination_id"]:
+            df_work[column] = df_work[column].astype("category")
+    df_work["commute_mode"] = df_work["commute_mode"].astype("category")
 
     # Employment time: 1.0 for full-time workers; for each part-time record,
     # one draw from the part-time distribution of the labour force survey

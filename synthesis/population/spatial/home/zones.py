@@ -186,11 +186,16 @@ def execute(context):
             (df_iris["population"] <= 200) &
             (df_iris["commune_id"].astype(str) == commune_id)]
 
+        if len(df_candidates) == 0:
+            # No small IRIS in the commune, e.g. a census IRIS that was redrawn
+            # since (apply_commune_passage): use all IRIS of the commune
+            df_candidates = df_iris[df_iris["commune_id"].astype(str) == commune_id]
+
         df_target = df_households[
             f_has_commune & ~f_has_iris &
             (df_households["commune_id"] == commune_id)].copy()
 
-        weights = df_candidates["population"].values.astype(float)
+        weights = np.nan_to_num(df_candidates["population"].values.astype(float))
         if (weights == 0.0).all(): weights += 1.0
         weights /= np.sum(weights)
 

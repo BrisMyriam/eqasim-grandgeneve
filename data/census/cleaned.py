@@ -1,6 +1,8 @@
 import pandas as pd
 import numpy as np
 import data.hts.hts as hts
+import data.census.coding as coding
+import data.spatial.commune_passage as commune_passage
 
 """
 This stage cleans the French population census:
@@ -25,6 +27,16 @@ def configure(context):
     context.stage("data.spatial.codes")
 
     context.config("with_motorcycles", False)
+
+    context.config("census_year", 2022)
+    context.config("census_two_wheels_mode", "bike")
+
+    if coding.splits_two_wheels(context.config("census_year"), context.config("census_two_wheels_mode")):
+        context.stage("data.census.two_wheels_shares")
+        context.config("random_seed")
+
+    if context.config("apply_commune_passage", False):
+        context.stage("data.spatial.commune_passage")
 
     if context.config("use_urban_type", False):
         context.stage("data.spatial.urban_type")
@@ -59,11 +71,27 @@ def execute(context):
     df["commune_id"] = df["IRIS"].str[:5]
     f_undefined = df["commune_id"].str.contains("Z")
     df.loc[f_undefined, "commune_id"] = "undefined"
-    df["commune_id"] = df["commune_id"].astype("category")
 
     df["iris_id"] = df["IRIS"]
     f_undefined = df["iris_id"].str.contains("Z") | df["iris_id"].str.contains("X")
     df.loc[f_undefined, "iris_id"] = "undefined"
+
+    if context.config("apply_commune_passage"):
+        # Older census in an older geography: translate communes and IRIS. IRIS
+        # that do not exist anymore (e.g. redrawn ones) become undefined and are
+        # drawn later within their commune (synthesis.population.spatial.home.zones)
+        passage = context.stage("data.spatial.commune_passage")
+        df_codes = context.stage("data.spatial.codes")
+
+        df["commune_id"] = commune_passage.translate_communes(df["commune_id"], passage)
+        df["iris_id"] = commune_passage.translate_iris(df["iris_id"], passage)
+
+        f_unknown = (df["iris_id"] != "undefined") & ~df["iris_id"].isin(set(df_codes["iris_id"].astype(str)))
+        print("Census: %d records with an IRIS unknown to the configured geography set to undefined: %s" % (
+            np.count_nonzero(f_unknown), sorted(df.loc[f_unknown, "iris_id"].unique())))
+        df.loc[f_unknown, "iris_id"] = "undefined"
+
+    df["commune_id"] = df["commune_id"].astype("category")
     df["iris_id"] = df["iris_id"].astype("category")
 
     # Age
@@ -72,15 +100,21 @@ def execute(context):
     # Clean COUPLE
     df["couple"] = df["COUPLE"] == "1"
 
-    # Clean TRANS
-    df["commute_mode"] = None
-    df.loc[df["TRANS"] == "1", "commute_mode"] = np.nan
-    df.loc[df["TRANS"] == "2", "commute_mode"] = "walk"
-    df.loc[df["TRANS"] == "3", "commute_mode"] = "bike"
-    df.loc[df["TRANS"] == "4", "commute_mode"] = "motorcycle"
-    df.loc[df["TRANS"] == "5", "commute_mode"] = "car"
-    df.loc[df["TRANS"] == "6", "commute_mode"] = "pt"
-    df.loc[df["TRANS"] == "Z", "commute_mode"] = np.nan
+    # Clean TRANS (coding depends on the census year, see data.census.coding);
+    # 1 (no transport) and Z (not applicable) give no commute mode
+    commute_modes = coding.census_commute_modes(context.config("census_year"), context.config("census_two_wheels_mode"))
+    df["commute_mode"] = df["TRANS"].map(commute_modes)
+
+    if coding.splits_two_wheels(context.config("census_year"), context.config("census_two_wheels_mode")):
+        # Old single two-wheel modality: bike or car, drawn with the share of
+        # bicycles of the commune (or departement) in a more recent census
+        f = df["commute_mode"] == coding.TWO_WHEELS
+        shares = coding.bike_shares(df.loc[f], context.stage("data.census.two_wheels_shares"))
+        random = np.random.default_rng(context.config("random_seed"))
+        df.loc[f, "commute_mode"] = np.where(random.random(np.count_nonzero(f)) < shares, "bike", "car")
+        print("Census: %d two-wheel commuters split into %d bike and %d car" % (
+            np.count_nonzero(f), np.count_nonzero(df.loc[f, "commute_mode"] == "bike"), np.count_nonzero(df.loc[f, "commute_mode"] == "car")))
+
     df["commute_mode"] = df["commute_mode"].astype("category")
 
     # Weight
@@ -137,10 +171,15 @@ def execute(context):
     # or we construct a new matching variable both here and in the surveys, which would
     # be the preferred way but is a TODO for now
     
-    df["socioprofessional_class"] = df["GS"].replace({ "Z": "8" }).astype(int)
+    if coding.uses_cs1(context.config("census_year")):
+        # Up to RP2021, CS1 directly gives the 8 classes (PCS2003)
+        df["socioprofessional_class"] = df["CS1"].astype(int)
 
-    # reconstruct retired people from STAT_GSEC variable (32 = retired)
-    df.loc[df["STAT_GSEC"].eq("32"), "socioprofessional_class"] = 7
+    else:
+        df["socioprofessional_class"] = df["GS"].replace({ "Z": "8" }).astype(int)
+
+        # reconstruct retired people from STAT_GSEC variable (32 = retired)
+        df.loc[df["STAT_GSEC"].eq("32"), "socioprofessional_class"] = 7
 
     # TODO: in the future matching variable, would be good to treat students / pupils separately
 

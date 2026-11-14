@@ -1,4 +1,5 @@
 import polars as pl
+import data.spatial.commune_passage as commune_passage
 
 """
 Counts MOBSCO students per residence commune, place of study (as in the census
@@ -14,6 +15,9 @@ def configure(context):
     context.config("od_sco_path", "rp_2022/RP2022_mobsco.parquet")
 
     context.stage("data.spatial.codes")
+
+    if context.config("apply_commune_passage", False):
+        context.stage("data.spatial.commune_passage")
 
 
 def age_range(age):
@@ -34,6 +38,10 @@ def execute(context):
     df = df.with_columns(
         pl.col(["COMMUNE", "ARM", "DCETUF"]).cast(pl.String),
         pl.col("AGEREV10").cast(pl.Int32), pl.col("IPONDI").cast(pl.Float64))
+
+    if context.config("apply_commune_passage"):
+        passage = context.stage("data.spatial.commune_passage")
+        df = df.with_columns([commune_passage.translate_communes_expression(column, passage) for column in ["COMMUNE", "DCETUF"]])
 
     # Arrondissements, as in data.od.cleaned
     df = df.with_columns(pl.when(pl.col("ARM").str.contains("Z")).then(pl.col("COMMUNE")).otherwise(pl.col("ARM")).alias("origin_id"))

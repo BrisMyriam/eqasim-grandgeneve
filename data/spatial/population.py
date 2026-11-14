@@ -1,7 +1,9 @@
 import os
+import numpy as np
 import pandas as pd
 import polars as pl
 import zipfile
+import data.spatial.commune_passage as commune_passage
 
 
 """
@@ -26,6 +28,53 @@ def configure(context):
     context.config("population_path", "rp_2022/base-ic-evol-struct-pop-2022_csv.zip")
     context.config("population_csv", "base-ic-evol-struct-pop-2022.CSV")
     context.config("population_year", 22)
+
+    if context.config("apply_commune_passage", False):
+        context.stage("data.spatial.commune_passage")
+
+
+def apply_commune_passage(df_population, passage, df_codes):
+    """
+    Translates population data of an older geography to the configured one.
+    Merged communes without IRIS get the IRIS of their new commune; the
+    population of IRIS that still do not exist (redrawn IRIS, or absorbed
+    communes now part of a commune with IRIS) is spread over the IRIS of the
+    commune that have no population yet, or else over all of its IRIS in
+    proportion to their population.
+    """
+    df_population = df_population.copy()
+    df_population["commune_id"] = commune_passage.translate_communes(df_population["commune_id"], passage)
+    df_population["iris_id"] = commune_passage.translate_iris(df_population["iris_id"], passage)
+
+    codes_iris = df_codes[["iris_id", "commune_id"]].astype(str).drop_duplicates()
+    f_unknown = ~df_population["iris_id"].isin(set(codes_iris["iris_id"]))
+    f_requested = df_population["commune_id"].isin(set(codes_iris["commune_id"]))
+
+    df_known = df_population[~f_unknown]
+    df_unknown = df_population[f_unknown & f_requested]
+
+    df_spread = []
+    for commune_id, population in df_unknown.groupby("commune_id")["population"].sum().items():
+        df_targets = codes_iris[codes_iris["commune_id"] == commune_id][["iris_id"]].copy()
+        df_targets["existing"] = df_targets["iris_id"].map(df_known.groupby("iris_id")["population"].sum())
+
+        f_empty = df_targets["existing"].isna()
+        if f_empty.any():
+            df_targets = df_targets[f_empty]
+            shares = np.ones(len(df_targets))
+        else:
+            shares = df_targets["existing"].values.astype(float)
+            if shares.sum() == 0: shares = np.ones(len(df_targets))
+
+        df_targets["population"] = population * shares / shares.sum()
+        df_targets["commune_id"] = commune_id
+        df_spread.append(df_targets[["iris_id", "commune_id", "population"]])
+
+    print("Population: %d IRIS (%.0f inhabitants) of the requested communes unknown to the configured geography, spread over %d IRIS of their commune" % (
+        len(df_unknown), df_unknown["population"].sum(), sum(len(df) for df in df_spread)))
+
+    df_population = pd.concat([df_known[["iris_id", "commune_id", "population"]]] + df_spread)
+    return df_population.groupby(["iris_id", "commune_id"], as_index = False)["population"].sum()
 
 
 def read_melodi(path):
@@ -70,7 +119,11 @@ def execute(context):
                     "P%s_POP" % year: "population"
                 })
 
-    df_population["iris_id"] = df_population["iris_id"].astype("category")  
+    if context.config("apply_commune_passage"):
+        df_population = apply_commune_passage(df_population,
+            context.stage("data.spatial.commune_passage"), context.stage("data.spatial.codes"))
+
+    df_population["iris_id"] = df_population["iris_id"].astype("category")
     df_population["commune_id"] = df_population["commune_id"].astype("category")
 
     # Merge into code data and verify integrity

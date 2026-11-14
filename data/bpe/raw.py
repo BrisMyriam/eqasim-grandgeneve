@@ -1,5 +1,6 @@
 import os
 import polars as pl
+import data.spatial.commune_passage as commune_passage
 
 
 """
@@ -10,6 +11,9 @@ def configure(context):
     context.config("data_path")
     context.config("bpe_path", "bpe_2024/BPE24.parquet")
     context.stage("data.spatial.codes")
+
+    if context.config("apply_commune_passage", False):
+        context.stage("data.spatial.commune_passage")
 
 
 def execute(context):
@@ -31,7 +35,17 @@ def execute(context):
 
         progress.update(len(parquet))
 
-    return parquet.to_pandas()
+    df = parquet.to_pandas()
+
+    if context.config("apply_commune_passage"):
+        # Older BPE edition in an older geography: translate communes and the
+        # commune part of the IRIS codes; IRIS that do not exist anymore are
+        # made undefined in data.bpe.cleaned
+        passage = context.stage("data.spatial.commune_passage")
+        df["DEPCOM"] = commune_passage.translate_communes(df["DEPCOM"], passage)
+        df["DCIRIS"] = commune_passage.translate_iris(df["DCIRIS"], passage)
+
+    return df
 
 
 def validate(context):

@@ -1,0 +1,170 @@
+## Grand Genève, French side, retrofitting 2015-16
+## Copy of config_cmdp_aurore_local.yml with the 2015 census (RP2015: individuals,
+## MOBPRO, MOBSCO and IRIS population) and the 2016 BPE, translated to the 2025
+## geography (apply_commune_passage). Meant as external population for
+## eqasim-switzerland config_local_2015.yml (STATPOP 2015).
+##
+## Inputs prepared from the INSEE files (txt / xls) in D:/MATSim/fr_data:
+##   rp_2015/RP2015_indcvi.parquet, RP2015_mobpro.parquet, RP2015_mobsco.parquet,
+##   rp_2015/base-ic-evol-struct-pop-2015_csv.zip, bpe_2016/BPE16.parquet,
+##   cog_2025/v_mvt_commune_2025.csv, codes_2025/reference_IRIS_geo2025.zip
+## The other inputs (BAN, BD TOPO, OSM, IRIS contours, SIRENE, canton codes, ...)
+## keep the paths of config_cmdp_aurore_local.yml and must be added to data_path.
+
+# This is the path to a directory where the pipeline can store temporary data
+working_directory: C:/MATSim/cache_fr_2015
+
+# This section defines which parts of the pipeline should be run
+run:
+  - synthesis.output
+
+# Here the configuraiton of the pipeline starts
+config:
+
+  ##############################
+  # Some general configuration #
+  ##############################
+
+  ## Number of CPUs to use
+  processes: 4
+
+  ################
+  # Random seeds #
+  ################
+
+  ## global random seed for the output population
+  random_seed: 31415
+
+  ##################################################
+  # Define sampling rate for the output population #
+  ##################################################
+
+  sampling_rate: 1
+
+  #################################
+  # household travel survey (HTS) #
+  #################################
+
+  ## EDGT 74 (Annecy 2017, Annemasse 2016), contemporary with the 2015 census
+  hts: edgt_74
+  edgt74_version: adisp
+
+  filter_hts: false
+
+  ##################
+  # Zone selection #
+  ##################
+
+  regions: ["84"]
+  departments: ["74", "01"]
+
+  ##################
+  # Day selection  #
+  ##################
+  specific_day_scenario: workday
+
+  #######################
+  #     Output paths    #
+  #######################
+
+  output_path: D:/MATSim/CMDP_input-data/fr_population_2015_100pct/
+  output_prefix: cmdp_
+
+  ##############################
+  #  Algorithms configurations #
+  ##############################
+
+  mode_choice: false
+
+  matching_attributes: ["age_class", "any_cars", "sex", "canton_id"]
+  mandatory_matching_attributes: ["age_class", "any_cars"]
+
+  secondary_activities.chain_solver: force_model
+  secondary_activities.border_penalty: true
+  secondary_activities.lake_barrier: true
+
+  home_zone_method: ilt
+  home_zone_use_cantons: true
+
+  work_location_method: before_matching
+  education_location_method: before_matching
+
+  ##########################
+  #  Tools configuration   #
+  ##########################
+
+  eqasim_version: 1.5.0
+  eqasim_branch: develop
+  eqasim_commit: ece4932
+  eqasim_repository: https://github.com/eqasim-org/eqasim-java.git
+
+  pt2matsim_version: 22.3
+  pt2matsim_branch: v22.3
+
+  #################
+  #  Input paths  #
+  #################
+
+  ## Absolute root path of all input data
+  data_path: D:/MATSim/fr_data
+
+  ## Census 2015 (individuals, MOBPRO and MOBSCO from the same release)
+  census_path: rp_2015/RP2015_indcvi.parquet
+  od_pro_path: rp_2015/RP2015_mobpro.parquet
+  od_sco_path: rp_2015/RP2015_mobsco.parquet
+
+  ## Census year: up to 2016, TRANS has a single "two-wheelers" modality (bicycles and
+  ## motorcycles), and the socioprofessional category is read from CS1 (data.census.coding)
+  census_year: 2015
+  ## What two-wheelers of the old TRANS coding become: "bike", "motorcycle", "car" or
+  ## "split": bike or car with the share of bicycles among two-wheelers of RP2017
+  ## (first census separating them), per commune with >= 30 two-wheel records, else
+  ## per departement (~51% in 01, ~54% in 74); see data.census.two_wheels_shares
+  census_two_wheels_mode: split
+  two_wheels_reference_path: rp_2017/RP2017_mobpro.parquet
+
+  ## The 2015 census is published in the 2017 geography and the 2016 BPE in the
+  ## 2016 one: translate their commune and IRIS codes to the configured geography
+  ## (2025) with the INSEE table of commune changes (data.spatial.commune_passage)
+  apply_commune_passage: true
+  commune_passage_path: cog_2025/v_mvt_commune_2025.csv
+
+  ## The Swiss destination codes (SU...) are mapped with the 2022 documentation
+  ## (only ~0.4% of the 2015 cross-border workers have codes missing from it)
+  # od_documentation_path: rp_2022/contenu_RP2022_mobpro.pdf
+
+  ## IRIS population 2015 (converted from base-ic-evol-struct-pop-2015.xls)
+  population_path: rp_2015/base-ic-evol-struct-pop-2015_csv.zip
+  population_csv: base-ic-evol-struct-pop-2015.CSV
+  population_year: 15
+
+  ## BPE 2016 (data.gouv.fr copy of the INSEE file, no CAPACITE / SIRET columns;
+  ## ~30% of the equipments of 01 / 74 have no coordinates and are placed in their IRIS)
+  bpe_path: bpe_2016/BPE16.parquet
+
+  ## 2025 geography, as in config_cmdp_aurore_local.yml
+  iris_path: iris_2025
+  codes_path: codes_2025/reference_IRIS_geo2025.zip
+  codes_xlsx: reference_IRIS_geo2025.xlsx
+
+  ban_path: ban_cmdp
+  bdtopo_path: bdtopo_cmdp
+  osm_path: osm_cmdp
+
+  ## GTFS of the 2015-16 scenario (same as eqasim-switzerland config_local_2015.yml)
+  gtfs_files: ["D:/MATSim/CMDP_input-data/gtfs_2016/merged_gtfs_2016.zip"]
+
+  ## TODO for full 2015 consistency (still the defaults of the 2022 setup):
+  ## income (Filosofi 2015), tiles, vehicles, SIRENE (current stock)
+  # income_com_path: filosofi_2015/...
+  # income_year: 15
+  # vehicles_year: 2015
+
+  ##############################
+  # SEND PEOPLE TO SWITZERLAND #
+  ##############################
+  generate_outbound_flows: true
+  swiss_cantons: "D:/MATSim/CMDP_input-data/spatial/canton/swissBOUNDARIES3D_1_5_TLM_KANTONSGEBIET.shp"
+  swiss_municipalities: "D:/MATSim/CMDP_input-data/spatial/municipality/2022/swissBOUNDARIES3D_1_5_TLM_HOHEITSGEBIET.shp"
+  cantons: ["Genève", "Vaud"]
+  swiss_municipality_types: "D:/MATSim/CMDP_input-data/spatial/Raumgliederungen.xlsx"

@@ -1,5 +1,6 @@
 import os
 import polars as pl
+import data.spatial.commune_passage as commune_passage
 """
 Loads raw OD data from French census data.
 """
@@ -14,12 +15,23 @@ def configure(context):
     if context.config("generate_outbound_flows"):
         context.stage("data.od.read_CH_mun_insee_names")
 
+    if context.config("apply_commune_passage", False):
+        context.stage("data.spatial.commune_passage")
+
+
+def translate_communes(context, parquet, columns):
+    """ Older OD data in an older geography: translate the commune codes (data.spatial.commune_passage) """
+    if not context.config("apply_commune_passage"):
+        return parquet
+
+    passage = context.stage("data.spatial.commune_passage")
+    return parquet.with_columns([commune_passage.translate_communes_expression(column, passage) for column in columns])
 
 
 def execute(context):
     df_codes           = context.stage("data.spatial.codes")
     requested_communes = list(set(df_codes["commune_id"].astype(str).values.tolist()))
-    insee_to_ch_id     = context.stage("data.od.read_CH_mun_insee_names")
+    insee_to_ch_id     = context.stage("data.od.read_CH_mun_insee_names") if context.config("generate_outbound_flows") else None
 
     # First, load work
     with context.progress(label = "Reading work flows ...") as progress:
@@ -36,6 +48,7 @@ def execute(context):
         parquet = pl.read_parquet("{}/{}".format(context.config("data_path"), context.config("od_pro_path")),columns=  list(COLUMNS_DTYPES.keys()))
         
         parquet = parquet.cast(COLUMNS_DTYPES)
+        parquet = translate_communes(context, parquet, ["COMMUNE", "DCLT"])
 
         if context.config("generate_outbound_flows"):
             parquet = parquet.with_columns(pl.when(pl.col("DCLT") == "99999").then(pl.col("DCFLT")).otherwise(pl.col("DCLT")).alias("DCLT"))
@@ -66,6 +79,7 @@ def execute(context):
         parquet = pl.read_parquet("{}/{}".format(context.config("data_path"), context.config("od_sco_path")), columns=  COLUMNS_DTYPES.keys())
 
         parquet = parquet.cast(COLUMNS_DTYPES)
+        parquet = translate_communes(context, parquet, ["COMMUNE", "DCETUF"])
 
         if context.config("generate_outbound_flows"):
             parquet = parquet.with_columns(pl.when(pl.col("DCETUF") == "99999").then(pl.col("DCETUE")).otherwise(pl.col("DCETUF")).alias("DCETUF"))
